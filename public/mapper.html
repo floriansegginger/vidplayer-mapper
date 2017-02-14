@@ -1,0 +1,546 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PMW mapper</title>
+  <link rel="stylesheet" href="style/mapper.css">  
+</head>
+<body>
+  <div class="layer" id="layer-mapping">
+    <div id="mode-selector"><p class="button-label"></p></div>
+    <div id="mire"><p class="button-label">Test pattern</p></div>
+    <div id="reset"><p class="button-label">Reset</p></div>    
+    <div id="values"></div>
+    <div class="edge-selector" id="top-left"></div>
+    <div class="edge-selector" id="top-right"></div>
+    <div class="edge-selector" id="bottom-left"></div>
+    <div class="edge-selector" id="bottom-right"></div>
+    <div id="invertX">
+      <p class="button-label">
+        Invert X drag
+      </p>
+    </div>
+    <div id="invertY">
+      <p class="button-label">
+        Invert Y drag
+      </p>
+    </div>
+    <div id="flipX">
+      <p class="button-label">
+        Flip X
+      </p>
+    </div>
+    <div id="flipY">
+      <p class="button-label">
+        Flip Y
+      </p>
+    </div>
+    <div id="cursor"></div>
+  </div>
+  <div class="layer"  id ="layer-config">
+    <div id="displayWidth">
+      <p class="button-label leftlabel">Width</p>
+      <input type="text" />
+    </div>
+    <div id="displayHeight">
+      <p class="button-label leftlabel">Height</p>
+      <input type="text" />      
+    </div>
+    <div id="port">
+      <p class="button-label leftlabel">Port</p>
+      <input type="text" />      
+    </div>    
+    <div id="mountMode">
+      <p class="button-label leftlabel">Enable read-write?</p>
+      <div class="yes">
+        <p class="button-label">Yes</p>
+      </div>
+      <div class="no">
+        <p class="button-label">Nope</p>
+      </div>
+    </div>
+    <div id="send">
+      <p class="button-label">Send</p>
+    </div>
+    <div id="reboot">
+      <p class="button-label">Reboot</p>
+    </div>
+    <div id="kill">
+      <p class="button-label">Kill</p>
+    </div>  
+  </div>
+  <div class="layer"  id="layer-screenshot">
+    <img src="screenshot.png" />
+  </div>
+  <div id="mode-switch">
+    <p class="button-label">
+      Next mode
+    </p>      
+  </div>  
+  <script src="scripts/jquery-1.12.4.min.js"></script>
+  <script src="scripts/jquery-ui.min.js"></script>
+  <script src="scripts/jquery.ui.touch-punch.min.js"></script>
+  <script>
+  $( function() {
+
+    var flagMappingConfChanged = false;
+    var flagVidConfChanged = false;
+    var flagMountModeChanged = false;
+
+    var flagDragging = false;
+
+    var invertX = true;
+    var invertY = false;
+
+    var currentLayer = 1;
+    var nbLayers = 3;
+
+    var curMode = -1;
+    var modes = ["edges","crop","blending"];
+
+    var curEdge = 'top-left';
+
+    var incrementX = 0;
+    var incrementY = 0;
+
+    var ws = new WebSocket('ws://'+location.host+'/api', 'echo-protocol');
+
+    var mountMode = 'ro';
+    var playerConf = {
+      width:1024,
+      height:768,
+      port:4243,
+      udpWait:2000,
+      bufferLength:1
+    }
+    var origMappingConf = {
+      mire:0,
+      edges:{
+        top:{
+          left:{
+            x:0,
+            y:1
+          },
+          right:{
+            x:1,
+            y:1
+          }
+        },
+        bottom:{
+          left:{
+            x:0,
+            y:0
+          },
+          right:{
+            x:1,
+            y:0
+          }
+        }
+      },
+      crop:{
+        top:{
+          left:{
+            x:0,
+            y:1
+          },
+          right:{
+            x:1,
+            y:1
+          }
+        },
+        bottom:{
+          left:{
+            x:0,
+            y:0
+          },
+          right:{
+            x:1,
+            y:0
+          }
+        }
+      },
+      blending:
+      {
+        top:0,
+        right:0,
+        bottom:0,
+        left:0
+      }
+    };
+
+    var mappingConf = JSON.parse(JSON.stringify(origMappingConf));
+
+    var swap = function(obj1,attr1,obj2,attr2)
+    {
+      var tmp = obj1[attr1];
+
+      obj1[attr1] = obj2[attr2];
+      obj2[attr2] = tmp;
+    }
+
+    var normalize = function(object)
+    {
+      for(var i in object)
+      {
+        if(typeof object[i] === 'number')
+        {
+          // if(object[i] < 0)
+          //   object[i] = 0;
+          // else if(object[i] > 1)
+          //   object[i] = 1;
+        }
+        else if(typeof object[i] === 'object')
+        {
+          normalize(object[i]);
+        }
+      }
+    }
+
+    var updateMapping = function()
+    {
+      var edges = curEdge.split('-');
+
+      var localIncrementX = incrementX;
+      var localIncrementY = incrementY;
+
+      if(curMode == 2)
+      {
+        if(edges[1] == 'right')
+          edges[1] = 'left';
+        else
+          edges[1] = 'right';
+      }
+
+      if(curMode == 2 && edges[0] == 'top')
+        localIncrementY *= -1;
+
+      if(curMode == 2) // Blending
+      {
+        mappingConf['blending'][edges[0]] += localIncrementY/200;
+        mappingConf['blending'][edges[1]] += localIncrementX/200;
+      }
+      if(curMode == 1) // Crop
+      {
+        if(edges[0] == 'top' || edges[0] == 'bottom')
+        {
+          mappingConf['crop'][edges[0]]['left'].y += localIncrementY/300;
+          mappingConf['crop'][edges[0]]['right'].y += localIncrementY/300;
+        }
+
+        if(edges[1] == 'left' || edges[1] == 'right')
+        {
+          mappingConf['crop']['top'][edges[1]].x += localIncrementX/300;
+          mappingConf['crop']['bottom'][edges[1]].x += localIncrementX/300;
+        }
+      }      
+      if(curMode == 0) // Edges
+      {
+        mappingConf[modes[curMode]][edges[0]][edges[1]].x += localIncrementX/300;
+        mappingConf[modes[curMode]][edges[0]][edges[1]].y += localIncrementY/300;
+      }
+      normalize(mappingConf);
+    }
+
+    var updateView = function()
+    {
+      var edges = curEdge.split('-');
+
+      console.log("+");
+
+      if(curMode == 2)
+      {
+        if(edges[1] == 'right')
+          edges[1] = 'left';
+        else
+          edges[1] = 'right';
+      }
+      if(curMode == 2)
+      {
+        $("#values").html('{'+mappingConf['blending'][edges[0]].toFixed(2)+','+mappingConf['blending'][edges[1]].toFixed(2)+'}');        
+      }
+      else
+      {
+        $("#values").html('{'+mappingConf[modes[curMode]][edges[0]][edges[1]].x.toFixed(2)+','+mappingConf[modes[curMode]][edges[0]][edges[1]].y.toFixed(2)+'}');
+      }
+
+
+      $("#mode-selector").find("p").html(modes[curMode]);
+
+      $(".edge-selector").removeClass("selected");
+      $("#"+curEdge).addClass("selected");
+
+      if(invertY)
+        $("#invertY").addClass('selected');
+      else
+        $("#invertY").removeClass('selected');  
+
+      if(invertX)
+        $("#invertX").addClass('selected');
+      else
+        $("#invertX").removeClass('selected');      
+
+      $("#mountMode .yes,#mountMode .no").removeClass("selected");
+
+      if(mountMode=='rw')
+        $("#mountMode .yes").addClass("selected");
+      else        
+        $("#mountMode .no").addClass("selected");      
+
+      if(mappingConf["mire"] == 1)
+        $("#mire").addClass('selected');
+      else
+        $("#mire").removeClass('selected');
+
+      $("#displayWidth input").val(playerConf.width);         
+      $("#displayHeight input").val(playerConf.height);         
+      $("#port input").val(playerConf.port);         
+    }
+
+    // $("body").on('tap touch touchstart',function(e){//e.preventDefault();
+    //   return false;})
+
+    /* Interface modifications actions */
+    $("#mode-switch").click(function(e){
+
+      e.preventDefault();
+
+      currentLayer = (currentLayer+1)%nbLayers+1;
+
+      $('.layer').css({zIndex:0});
+      $('.layer:nth-child('+currentLayer+')').css({zIndex:1});
+
+    });
+
+    $("#invertX").click(function(e){
+      e.preventDefault();      
+      invertX = !invertX;
+      updateView();
+    });
+
+    $("#invertY").click(function(e){
+      e.preventDefault();      
+      invertY = !invertY;
+      updateView();
+    });
+
+    $("#mode-selector").click(function(e){
+      e.preventDefault();
+      curMode = (curMode+1)%modes.length;
+      updateView();      
+    }).click();
+
+    $(".edge-selector").click(function(e){
+      e.preventDefault();      
+      curEdge = $(this).attr("id");
+      updateView();
+    }).click();
+
+
+    $("#layer-screenshot img").click(function(e){
+      e.preventDefault();
+      ws.send(JSON.stringify({
+        request:'screenshot'
+      }));
+    });
+
+    /* Mount mode modification action */
+    $("#mountMode .yes,#mountMode .no").click(function(){
+
+      if($(this).hasClass('yes'))
+        mountMode = 'rw';
+      else
+        mountMode = 'ro';
+
+      flagMountModeChanged = true;
+    });
+
+
+    /* Mapping modifications action */
+    $("#mire").click(function(e){
+
+      e.preventDefault();      
+
+      mappingConf["mire"] = (mappingConf["mire"] == 0) ? 1 : 0;
+
+      flagMappingConfChanged = true;
+    });
+
+    $("#reset").click(function(e){
+
+      e.preventDefault();      
+
+      mappingConf = JSON.parse(JSON.stringify(origMappingConf));
+
+      flagMappingConfChanged = true;
+    });    
+
+    $("#cursor").draggable({
+
+      start: function() {
+        flagDragging = true;
+      },
+      drag: function() {
+        
+        var height = $("body").height();
+        var width = $("body").width();
+
+        var top = $("#cursor").offset().top+$("#cursor").height()/2;
+        var left = $("#cursor").offset().left+$("#cursor").width()/2;
+
+        incrementY = (invertY ? 1 : -1)*(top-height/2)/(height/2);
+        incrementX = (invertX ? 1 : -1)*(left-width/2)/(width/2);
+
+        flagMappingConfChanged = true;
+
+        // console.log(incrementX,incrementY);
+      },
+      stop: function() {
+
+        flagDragging = false;
+
+        incrementX = 0;
+        incrementY = 0;
+      },
+      revert: true,
+      revertDuration: 0
+    });
+
+    $("#flipY").click(function(e){
+      e.preventDefault();      
+
+      swap(mappingConf["crop"]["top"]['right'],'y',mappingConf["crop"]["bottom"]['right'],'y');
+      swap(mappingConf["crop"]["top"]['left'],'y',mappingConf["crop"]["bottom"]['left'],'y');
+
+      flagMappingConfChanged = true;
+    });
+
+    $("#flipX").click(function(e){
+      e.preventDefault();      
+
+      swap(mappingConf["crop"]["top"]['right'],'x',mappingConf["crop"]["top"]['left'],'x');
+      swap(mappingConf["crop"]["bottom"]['right'],'x',mappingConf["crop"]["bottom"]['left'],'x');
+
+      flagMappingConfChanged = true;
+    });
+
+    /* Config modifications actions */
+    $("#send").click(function(){
+
+      var dispWidth = parseInt($("#displayWidth input").val());
+      var dispHeight = parseInt($("#displayHeight input").val());
+      var port = parseInt($("#port input").val());
+
+      console.log(dispWidth,dispHeight,port);
+
+      if(Number.isNaN(dispWidth) || dispWidth <= 0 || Number.isNaN(dispHeight) || dispHeight <= 0 || Number.isNaN(port) || port <= 0)
+      {
+        alert("Invalid values for port, width or height.");
+        return;
+      }
+
+      playerConf.width = dispWidth;
+      playerConf.height = dispHeight;
+      playerConf.port = port;
+
+      flagVidConfChanged = true;
+    });
+
+    $("#kill").click(function(){
+        ws.send(JSON.stringify({
+          request:'kill'
+        }));
+    });
+    $("#reboot").click(function(){
+        ws.send(JSON.stringify({
+          request:'reboot'
+        }));
+    });
+
+    window.setInterval(function(){
+
+      if(flagDragging)
+      {
+        updateMapping();
+        flagMappingConfChanged = true;      
+      }
+
+      if(flagMappingConfChanged)
+      {
+        ws.send(JSON.stringify({
+          request:'setMapping',
+          data:mappingConf
+        }));
+      }
+
+      if(flagVidConfChanged)
+      {
+        ws.send(JSON.stringify({
+          request:'setConfig',
+          data:playerConf
+        }));
+      }
+
+      if(flagMountModeChanged)
+      {
+        ws.send(JSON.stringify({
+          request:'setMountMode',
+          data:mountMode
+        }));
+      }
+
+      if(flagMappingConfChanged || flagVidConfChanged || flagMountModeChanged)
+      {
+        flagMountModeChanged = false;
+        flagVidConfChanged = false;
+        flagMappingConfChanged = false;
+        updateView();
+      }
+    },100);
+
+
+    ws.onopen = function(client){
+
+      ws.send(JSON.stringify({
+        request:'getMapping'
+      }));
+      ws.send(JSON.stringify({
+        request:'getConfig'
+      }));
+      ws.send(JSON.stringify({
+        request:'getMountMode'
+      }));        
+      ws.send(JSON.stringify({
+        request:'screenshot'
+      }));              
+    };
+
+    ws.onmessage = function(message){
+
+      message.utf8Data = message.data;
+
+      var parsedMessage = JSON.parse(message.utf8Data);
+
+      switch(parsedMessage.response)
+      {
+        case 'mapping':
+          mappingConf = parsedMessage.data;
+        break;
+        case 'config':
+          playerConf = parsedMessage.data;
+        break;
+        case 'mountMode':
+          mountMode = parsedMessage.data;
+        break;
+        case 'screenshotUpdated':
+          $("#layer-screenshot img").attr('src',"screenshot.png?rand="+Math.random());
+        break;
+      }
+
+      updateView();      
+    }; 
+
+  });
+  </script>  
+</body>
+</html>
